@@ -1,6 +1,7 @@
 #!/usr/bin/python
 #
 # Copyright (C) 2020 packom.net
+# Copyright (C) 2022 Addiva Elektronik AB
 #
 # A sample MBus Slave implemented in Python
 # 
@@ -19,16 +20,18 @@
 # 
 # 
 
-import serial, signal, logging
+import serial, signal, logging, sys, struct
 
 # Edit these values as appropriate
 DEVICE = '/dev/ttyUSB0' # Serial device controlling the slave is connected to
 BAUDRATE = 2400 # Baudrate supported by this slave
 ADDR = 3 # MBus Slave address, 0=250 are valid
-ID_NO = "12345678" # MBus Slave serial number, can be up to 8 characters, 0-9, A-F
-
+ID_NO = 12345678 # MBus Slave serial number, can be up to 8 digits or upper case hex characters
+MANUF = "TST" # MBus Manufacturer identifier (registered)
+VERSION = 1
+MEDIUM = 0
 ACCESS_NO = 0
-PARITY=serial.PARITY_EVEN
+PARITY=serial.PARITY_NONE #PARITY_EVEN
 STOPBITS=serial.STOPBITS_ONE
 BYTESIZE=serial.EIGHTBITS
 TEST_ADDR = 254
@@ -37,6 +40,7 @@ SINGLE_CHAR = 0xE5
 SHORT_FRAME_START_BYTE = 0x10
 LONG_FRAME_START_BYTE = 0x68
 CI_FIXED_DATA_RSP = 0x73
+CI_VARIABLE_DATA_RSP = 0x72
 
 ser = None
 logger = None
@@ -56,31 +60,6 @@ def error(msg, *args, **kwargs):
 def critical(msg, *args, **kwargs):
   logger.critical(msg, *args, **kwargs)
 
-bcd_encode_table = {'0':0, '1':1, '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, 'A':10, 'B':11, 'C':12, 'D':13, 'E':14, 'F':15}
-def bcd_encode(text, bytes):
-  in_bytes = []
-  length = 0
-  for char in text[::-1]: # Go backwards through the string
-    in_bytes.append(bcd_encode_table[char])
-    length += 1
-  encoded = []
-  while (length > 0):
-    a = 0
-    if length > 1:
-      a = in_bytes.pop(1)
-    b = in_bytes.pop(0)
-    length -= 2
-    byte = (a << 4) | b
-    encoded.insert(0, byte)
-  while len(encoded) < bytes:
-    encoded.insert(0, 0)
-  if len(encoded) > bytes:
-    raise Exception
-  return encoded[::-1] # Flip it around again
-
-class FrameException(Exception):
-  pass
-
 class Frame:
   SHORT = 1
   LONG = 2
@@ -95,6 +74,220 @@ class Frame:
   _c_fields = [SND_NKE, SND_UD, REQ_UD2, REQ_UD1] # RSP_UD is Slave to Master so not included here
   _short_c_fields = [SND_NKE, REQ_UD2, REQ_UD1]
   _long_c_fields = [SND_UD] # RSP_UD is Slave to Master so not included here 
+  FN_INST   = 0b00
+  FN_MIN    = 0b10
+  FN_MAX    = 0b01
+  FN_ERR    = 0b11
+  DF_NONE   = 0b0000
+  DF_INT8   = 0b0001
+  DF_INT16  = 0b0010
+  DF_INT24  = 0b0011
+  DF_INT32  = 0b0100
+  DF_INT48  = 0b0110
+  DF_INT64  = 0b0111
+  DF_REAL   = 0b0101
+  DF_SELECT = 0b1000
+  DF_BCD2   = 0b1001
+  DF_BCD4   = 0b1010
+  DF_BCD8   = 0b1011
+  DF_BCD12  = 0b1110
+  DF_VARIABLE = 0b1101
+  DIF_MFR    = 0x0F
+  DIF_MFR_EXT = 0x1F
+  DIF_IDLE   = 0x2F
+  DIF_GLOBAL = 0x7F
+
+  @staticmethod
+  def VIF_ENERGY_Wh(e):
+      return (0b0000<<3) | (e + 3)
+  @staticmethod
+  def VIF_ENERGY_J(e):
+      return (0b0001<<3) | (e + 0)
+  @staticmethod
+  def VIF_VOLUME_l(e):
+      return (0b0010<<3) | (e + 3)
+  @staticmethod
+  def VIF_VOLUME_m3(e):
+      return (0b0010<<3) | (e + 6)
+  @staticmethod
+  def VIF_MASS_g(e):
+      return (0b0011<<3) | (e + 0)
+  @staticmethod
+  def VIF_MASS_kg(e):
+      return (0b0011<<3) | (e + 3)
+  VIF_TIME_SECONDS=0b00
+  VIF_TIME_MINUTES=0b01
+  VIF_TIME_HOURS=0b10
+  VIF_TIME_DAYS=0b11
+  @staticmethod
+  def VIF_OnTime(unit):
+    return (0b01000<<2) | unit
+  @staticmethod
+  def VIF_OperTime(unit):
+    return (0b01001<<2) | unit
+  @staticmethod
+  def VIF_POWER_W_h(e):
+    return (0b0101<<3) | (e + 3)
+  @staticmethod
+  def VIF_POWER_kJ_h(e):
+    return (0b0110<<3) | (e + 3)
+  @staticmethod
+  def VIF_FLOW_l_h(e):
+    return (0b0111<<3) | (e + 3)
+  @staticmethod
+  def VIF_FLOW_m3_h(e):
+    return (0b0111<<3) | (e + 6)
+  @staticmethod
+  def VIF_FLOW_l_m(e):
+    return (0b1000<<3) | (e + 3)
+  @staticmethod
+  def VIF_FLOW_m3_m(e):
+    return (0b1000<<3) | (e + 6)
+  @staticmethod
+  def VIF_FLOW_l_s(e):
+    return (0b1001<<3) | (e + 3)
+  @staticmethod
+  def VIF_FLOW_m3_s(e):
+    return (0b1001<<3) | (e + 6)
+  @staticmethod
+  def VIF_FLOW_g_h(e):
+    return (0b1010<<3) | (e + 0)
+  @staticmethod
+  def VIF_FLOW_kg_h(e):
+    return (0b1010<<3) | (e + 3)
+  @staticmethod
+  def VIF_FLOW_TEMP_C(e):
+    return (0b10110<<2) | (e + 3)
+  @staticmethod
+  def VIF_RETURN_TEMP_C(e):
+    return (0b10111<<2) | (e + 3)
+  @staticmethod
+  def VIF_TEMP_DIFF(e):
+    return (0b11000<<2) | (e + 3)
+  @staticmethod
+  def VIF_EXT_TEMP_C(e):
+    return (0b11001<<2) | (e + 3)
+  @staticmethod
+  def VIF_PRESSURE_bar(e):
+    return (0b11010<<2) | (e + 3)
+  VIF_DATE = 0b1101100
+  VIF_TIME = 0b1101101
+  VIF_HCA =  0b1101110
+  @staticmethod
+  def VIF_AVG_DURATION(unit):
+    return (0b11100<<2) | unit
+  @staticmethod
+  def VIF_ACT_DURATION(unit):
+    return (0b11101<<2) | unit
+  VIF_FABRICATION = 0b1111000
+  VIF_ENHANCED = 0b1111001
+  VIF_BUS_ADDR = 0b1111010
+  VIF_EXT_b =    0b1111011
+  VIF_EXT_STR =  0b1111100
+  VIF_EXT_a =    0b1111101
+  VIF_ANY =      0b1111110
+  VIF_MFR_DEFINED = 0b1111111
+  @staticmethod
+  def VIF_CREDIT(e):
+    return (0b1111101<<8)|(0b00000<<2)|(e+3)
+  @staticmethod
+  def VIF_DEBIT(e):
+    return (0b1111101<<8)|(0b00001<<2)|(e+3)
+  VIF_ACCESS_NUMBER = (0b1111101<<8)|(0b0001000)
+  VIF_MEDIUM        = (0b1111101<<8)|(0b0001001)
+  VIF_MANUFACTURER  = (0b1111101<<8)|(0b0001010)
+  VIF_PARAMETER_SET = (0b1111101<<8)|(0b0001011)
+  VIF_MODEL         = (0b1111101<<8)|(0b0001100)
+  VIF_HW_VERSION    = (0b1111101<<8)|(0b0001101)
+  VIF_FW_VERSION    = (0b1111101<<8)|(0b0001110)
+  VIF_SW_VERSION    = (0b1111101<<8)|(0b0001111)
+  VIF_CUSTOMER_LOCATION = (0b1111101<<8)|(0b0010000)
+  VIF_CUSTOMER      = (0b1111101<<8)|(0b0010001)
+  VIF_DIGITAL_OUT   = (0b1111101<<8)|(0b0011010)
+  VIF_DIGITAL_IN    = (0b1111101<<8)|(0b0011011)
+  VIF_BAUD_RATE     = (0b1111101<<8)|(0b0011100)
+  VIF_RESP_DELAY    = (0b1111101<<8)|(0b0011101)
+  VIF_RETRY         = (0b1111101<<8)|(0b0011110)
+  @staticmethod
+  def VIF_VOLT(e):
+    return (0b1111101<<8)|(0b100<<4)|(e+9)
+  @staticmethod
+  def VIF_AMPERE(e):
+    return (0b1111101<<8)|(0b101<<4)|(e+12)
+
+  bcd_encode_table = {'0':0, '1':1, '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, 'A':10, 'B':11, 'C':12, 'D':13, 'E':14, 'F':15}
+  @staticmethod
+  def bcd_encode(value, bytes):
+    encoded = bytearray(bytes)
+    offset = 0
+    nibble = 0
+    for char in str(value).zfill(bytes*2)[::-1]:
+      ch = Frame.bcd_encode_table[char]
+      encoded[offset] += ch << nibble
+      offset += 1 if nibble else 0
+      nibble = 0 if nibble else 4
+    return encoded
+
+  @staticmethod
+  def mfr_encode(manufacturer):
+    assert (len(manufacturer) == 3), 'Invalid manufacturer ID'
+
+    mfr = 0
+    for chr in manufacturer[::]:
+      v = ord(chr) - 64;
+      assert (v >= 0 and v < 32), "Invalid manufacturer ID"
+      mfr = mfr * 32 + v
+    return struct.pack("<H", mfr)
+
+  @staticmethod
+  def fixed_data_header(id=ID_NO, mfr=MANUF, ver=VERSION, medium=MEDIUM, access=0, status=0, signature=0):
+    return(
+      Frame.bcd_encode(id, 4) +
+      Frame.mfr_encode(mfr) +
+      struct.pack('<B', ver) +
+      struct.pack('<B', medium) +
+      struct.pack('<B', access % 256) +
+      struct.pack('<B', status) +
+      struct.pack('<H', signature))
+
+  @staticmethod
+  def dib(storage, fn, df, subunit=0, tariff=0):
+    data = bytearray(1)
+    data[0] = ( (storage & 1) << 6 ) | (fn << 4) | (df << 0)
+    storage <<= 1;
+    while (storage > 0 or subunit > 0 or tariff > 0) and data.len < 10:
+      data[-1] |= 1 << 7;
+      data += bytes([((subunit&1)<<6)|((tariff&0b11)<<4)|((storage&0b1111)<<0)])
+      subunit <<= 1
+      tariff <<= 2
+      storage <<=4
+    assert(storage == 0 and subunit == 0 and tariff == 0), 'Invalid storage/subunit/tariff' 
+    return data
+
+  @staticmethod
+  def vib(vif, *evif):
+    data = bytearray()
+    if (vif > 0xff):
+      data += bytes([(vif >> 8)|0x80])
+      vif &= 0xff
+    data += bytes([vif])
+    for f in evif:
+      if data.len > 0:
+        data[-1] |= 1 << 7;
+      data += bytes([f])
+    return data
+
+  @staticmethod
+  def data_block_int16(vif, value, *evif, df=DF_INT16, fn=FN_INST, storage=0, subunit=0, tariff=0):
+    return Frame.dib(storage=storage, fn=fn, df=df, subunit=subunit, tariff=tariff) + Frame.vib(vif=vif, *evif) + struct.pack('<H', value)
+
+  @staticmethod
+  def data_block_int8(vif, value, *evif, df=DF_INT16, fn=FN_INST, storage=0, subunit=0, tariff=0):
+    return Frame.dib(storage=storage, fn=fn, df=df, subunit=subunit, tariff=tariff) + Frame.vib(vif=vif, *evif) + struct.pack('<H', value)
+
+
+  class FrameException(Exception):
+    pass
 
   def __init__(self, type):
     # Can't create a CONTROL - a LONG may turn into a CONTROL
@@ -108,7 +301,7 @@ class Frame:
       self._csum_passed = False
       self._data = None
     else:
-      raise FrameException
+      raise Frame.FrameException
 
   def _handle_c_field(self, byte):
     self._csum += byte
@@ -125,7 +318,7 @@ class Frame:
       else:
         debug("Unexpected Long Frame C Field: 0x%2.2x" %byte)
     else:
-      raise FrameException
+      raise Frame.VIF_VOLUME_m3FrameException
 
   def _handle_a_field(self, byte):
     self._a_field = byte
@@ -144,45 +337,35 @@ class Frame:
     self._csum_passed = (self._csum % 256) == byte
 
   def _handle_stop(self, byte):
-    data = None
     if byte == STOP_BYTE:
       if self._addressed:
         if self._c_field == self.SND_NKE:
           info("Slave Initialization")
-          data = [SINGLE_CHAR,]
+          return bytearray([SINGLE_CHAR,])
         elif self._c_field == self.REQ_UD2:
           info("Request for User Data 2")
-          user_data = []
-          global ID_NO
-          user_data += bcd_encode(ID_NO, 4)
+          user_data = bytearray([self.RSP_UD, ADDR, CI_VARIABLE_DATA_RSP])
           global ACCESS_NO
-          user_data.append(ACCESS_NO % 256)
+          user_data += Frame.fixed_data_header(access=ACCESS_NO)
           ACCESS_NO += 1
-          user_data.append(0) # status field, indicates counter 1 and 2 are BCD
-          user_data += [0xE9, 0x7E] # medium water, unit1 = 1l, unit2 = 1l (same, but historic)
-          user_data += bcd_encode("123", 4)
-          user_data += bcd_encode("456", 4)
-          user_data = [self.RSP_UD, ADDR, CI_FIXED_DATA_RSP] + user_data
+          user_data += Frame.data_block_int16(Frame.VIF_VOLT(0), 1234)
+          user_data += Frame.data_block_int16(Frame.VIF_VOLUME_m3(0), 456)
           checksum = 0
-          ud_len = 0
+          ud_len = len(user_data)
+          assert(ud_len <= 255), "Too long response"
           for byte in user_data:
             checksum += byte
-            ud_len += 1
           checksum %= 256
-          if ud_len > 255:
-            raise Exception
-          data = [LONG_FRAME_START_BYTE, ud_len, ud_len, LONG_FRAME_START_BYTE]
-          data += user_data
-          data += [checksum, STOP_BYTE]
+          return bytearray([LONG_FRAME_START_BYTE, ud_len, ud_len, LONG_FRAME_START_BYTE])+user_data+bytearray([checksum, STOP_BYTE])
         elif self._c_field == self.REQ_UD1:
-          data = [SINGLE_CHAR,]
+          return bytearray([SINGLE_CHAR,])
         else:
           raise FrameException
       else:
         debug("Frame not for us")
     else:
       debug("Unexpected byte: 0x%2.2x", byte)
-    return data
+    return None
 
   def handle_byte(self, byte):
     data = None
@@ -207,7 +390,7 @@ class Frame:
     return frame, data
 
 def setup_serial_port():
-  ser = serial.Serial(DEVICE, baudrate=BAUDRATE, parity=PARITY, stopbits=STOPBITS, bytesize=BYTESIZE)
+  ser = serial.serial_for_url(DEVICE, baudrate=BAUDRATE, parity=PARITY, stopbits=STOPBITS, bytesize=BYTESIZE)
   return ser
 
 def handle_byte(frame, byte):
@@ -234,11 +417,8 @@ def send_data(ser, data):
   ser.write(data)
   debug("Sent data")
 
-run = True
-
 def signal_handler(sig, frame):
   global ser
-  run = False
   ser.close()
   ser = None
 
@@ -252,10 +432,9 @@ def log():
   info("  Slave address:   %d", ADDR)
   info("  Slave device ID: %s", ID_NO)
 
-def main(*args, **kwargs):
-  global run, ser
+def main():
+  global ser
   log()
-  signal.signal(signal.SIGINT, signal_handler)
   ser = setup_serial_port()
   info("Listening ...")
   frame = None
@@ -273,4 +452,8 @@ def main(*args, **kwargs):
   info("Exiting ...")
 
 if __name__ == "__main__":
-  main()
+  DEVICE=sys.argv[1]
+  try:
+     main()
+  except KeyboardInterrupt:
+     print("quit")
