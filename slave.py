@@ -34,7 +34,9 @@ ACCESS_NO = 0
 PARITY=serial.PARITY_NONE #PARITY_EVEN
 STOPBITS=serial.STOPBITS_ONE
 BYTESIZE=serial.EIGHTBITS
+NETWORK_ADDR = 253
 TEST_ADDR = 254
+BROADCAST_ADDR = 255
 STOP_BYTE = 0x16
 SINGLE_CHAR = 0xE5
 SHORT_FRAME_START_BYTE = 0x10
@@ -44,6 +46,7 @@ CI_VARIABLE_DATA_RSP = 0x72
 
 ser = None
 logger = None
+is_selected = False
 
 def debug(msg, *args, **kwargs):
   logger.debug(msg, *args, **kwargs)
@@ -63,8 +66,7 @@ def critical(msg, *args, **kwargs):
 class Frame:
   SHORT = 1
   LONG = 2
-  CONTROL = 3
-  types = [SHORT, LONG, CONTROL]
+  types = [SHORT, LONG]
 
   SND_NKE = 0x40
   SND_UD = 0x53
@@ -73,7 +75,9 @@ class Frame:
   RSP_UD = 0x08
   _c_fields = [SND_NKE, SND_UD, REQ_UD2, REQ_UD1] # RSP_UD is Slave to Master so not included here
   _short_c_fields = [SND_NKE, REQ_UD2, REQ_UD1]
-  _long_c_fields = [SND_UD] # RSP_UD is Slave to Master so not included here 
+  _long_c_fields = [SND_UD] # RSP_UD is Slave to Master so not included here
+  CI_SELECT = 0x52
+  CI_SELECT_BE = 0x56
   FN_INST   = 0b00
   FN_MIN    = 0b10
   FN_MAX    = 0b01
@@ -285,33 +289,87 @@ class Frame:
   def data_block_int8(vif, value, *evif, df=DF_INT16, fn=FN_INST, storage=0, subunit=0, tariff=0):
     return Frame.dib(storage=storage, fn=fn, df=df, subunit=subunit, tariff=tariff) + Frame.vib(vif=vif, *evif) + struct.pack('<H', value)
 
+  @staticmethod
+  def nibble_match(byte, match):
+    if (match & 0xF0) == 0xF0:
+      byte |= 0xF0
+    if (match & 0x0F) == 0x0F:
+      byte |= 0x0F
+    return byte == match
+  def byte_match(byte, match):
+    return byte == match or match == 0xFF
+
+  def match_secondary(self):
+    # 0-3 ID (nibble wildcard)
+    # 4-5 Manufacturer
+    # 6 Generation
+    # 7 Media
+
+    # Is the selector of expected length?
+    if len(self._message) != 8:
+      return False
+
+    secondary = list(
+      Frame.bcd_encode(ID_NO, 4) +
+      Frame.mfr_encode(MANUF) +
+      struct.pack('<B', VERSION) +
+      struct.pack('<B', MEDIUM)
+    )
+    print("".join(["{:02X}".format(x) for x in secondary]))
+    print("".join(["{:02X}".format(x) for x in self._message]))
+    # ID is BCD encoded, nibble match
+    for i in range(0, 4):
+      if not Frame.nibble_match(secondary[i], self._message[i]):
+        return False
+      pass
+    # Rest is binary, byte match
+    for i in range(4, 8):
+      if not Frame.byte_match(secondary[i], self._message[i]):
+        return False
+      pass
+
+    return True 
 
   class FrameException(Exception):
     pass
 
   def __init__(self, type):
-    # Can't create a CONTROL - a LONG may turn into a CONTROL
-    if (type in [self.SHORT, self.LONG]):
-      self._type = type
-      self._bytes = 0
-      self._c_field = None
-      self._a_field = None
-      self._addressed = False
-      self._csum = 0
-      self._csum_passed = False
-      self._data = None
-    else:
-      raise Frame.FrameException
+    self._type = type
+    self._bytes = 0
+    self._c_field = None
+    self._a_field = None
+    self._addressed = False
+    self._broadcast = False
+    self._network = False
+    self._csum = 0
+    self._csum_passed = False
+    self._data = None
+    self._fcb = None
+    self._fcv = None
+    self._message = []
+
+  def _handle_start(self, byte):
+    if byte != LONG_FRAME_START_BYTE:
+      warning("Invalid START byte %02x" % byte)
+
+  def _handle_l_field(self, byte, offset):
+    if offset == 0:
+      self._l_field = byte
+    elif self._l_field != byte:
+      warning("Inconsistent L field, %d != %d" % (self._l_field, byte))
 
   def _handle_c_field(self, byte):
-    self._csum += byte
+    self._fcv = (byte & 1 << 4) != 0
+    self._fcb = (byte & 1 << 5) != 0
+    byte &= ~(1 << 5)  # Strip FCB bit from the C value
+
     if (self._type == self.SHORT):
       if (byte in self._short_c_fields):
         debug("C Field: 0x%2.x" % byte)
         self._c_field = byte
       else:
         debug("Unexpected Short Frame C Field: 0x%2.2x" %byte)
-    elif (self._type == self.self.SHORT):
+    elif (self._type == self.LONG):
       if (byte in self._long_c_fields):
         debug("C Field: 0x%2.x" % byte)
         self._c_field = byte
@@ -321,50 +379,83 @@ class Frame:
       raise Frame.VIF_VOLUME_m3FrameException
 
   def _handle_a_field(self, byte):
+    global is_selected
     self._a_field = byte
-    self._csum += byte
     if self._a_field == ADDR:
       debug("My Address: %d" % self._a_field)
       self._addressed = True
     elif self._a_field == TEST_ADDR:
       debug("Test Address: %d" % self._a_field)
       self._addressed = True
+    elif self._a_field == NETWORK_ADDR:
+      self._network = True
+      if is_selected:
+        debug("Network Address selected: %d" % self._a_field)
+        self._addressed = True
+      else:
+        debug("Network Address NOT selected: %d" % self._a_field)
+      pass
+    elif self._a_field == BROADCAST_ADDR:
+      debug("Broadcast Address selected: %d" % self._a_field)
+      self._addressed = True
+      self._broadcast = True
     else:
       debug("Not My Address: %d vs my address: %d" % (self._a_field, ADDR))
 
+  def _handle_ci_field(self, byte):
+    global is_selected
+    self._ci_field = byte
+    if self._network and self._ci_field in [self.CI_SELECT, self.CI_SELECT_BE]:
+      self._addressed = True
+      is_selected = False
+
   def _handle_checksum(self, byte):
     debug("Checksum received: %2.2x vs stored: %2.2x" % (byte, self._csum))
-    self._csum_passed = (self._csum % 256) == byte
+    self._csum_passed = self._csum == byte
 
   def _handle_stop(self, byte):
-    if byte == STOP_BYTE:
-      if self._addressed:
-        if self._c_field == self.SND_NKE:
-          info("Slave Initialization")
+    global is_selected
+    debug("Frame received: %2x" % self._c_field)
+    if byte != STOP_BYTE:
+      warning("Invalid STOP byte %02x" % byte)
+      return None
+
+    if self._addressed:
+      if self._c_field is None:
+        info("Ignoring unknown frame")
+        return None
+      if self._c_field == self.SND_NKE:
+        info("Slave Initialization")
+        if self._network:
+          is_selected = False
+        return bytearray([SINGLE_CHAR,])
+      elif self._c_field == self.REQ_UD2:
+        info("Request for User Data 2")
+        user_data = bytearray([self.RSP_UD, ADDR, CI_VARIABLE_DATA_RSP])
+        global ACCESS_NO
+        user_data += Frame.fixed_data_header(access=ACCESS_NO)
+        ACCESS_NO += 1
+        user_data += Frame.data_block_int16(Frame.VIF_VOLT(0), 1234)
+        user_data += Frame.data_block_int16(Frame.VIF_VOLUME_m3(0), 456)
+        checksum = 0
+        ud_len = len(user_data)
+        assert(ud_len <= 255), "Too long response"
+        for byte in user_data:
+          checksum += byte
+        checksum %= 256
+        return bytearray([LONG_FRAME_START_BYTE, ud_len, ud_len, LONG_FRAME_START_BYTE])+user_data+bytearray([checksum, STOP_BYTE])
+      elif self._c_field == self.REQ_UD1:
+        return bytearray([SINGLE_CHAR,])
+      elif self._c_field == self.SND_UD and self._ci_field == self.CI_SELECT:
+        if self.match_secondary():
+          is_selected = True
+          info("Secondary selected")
           return bytearray([SINGLE_CHAR,])
-        elif self._c_field == self.REQ_UD2:
-          info("Request for User Data 2")
-          user_data = bytearray([self.RSP_UD, ADDR, CI_VARIABLE_DATA_RSP])
-          global ACCESS_NO
-          user_data += Frame.fixed_data_header(access=ACCESS_NO)
-          ACCESS_NO += 1
-          user_data += Frame.data_block_int16(Frame.VIF_VOLT(0), 1234)
-          user_data += Frame.data_block_int16(Frame.VIF_VOLUME_m3(0), 456)
-          checksum = 0
-          ud_len = len(user_data)
-          assert(ud_len <= 255), "Too long response"
-          for byte in user_data:
-            checksum += byte
-          checksum %= 256
-          return bytearray([LONG_FRAME_START_BYTE, ud_len, ud_len, LONG_FRAME_START_BYTE])+user_data+bytearray([checksum, STOP_BYTE])
-        elif self._c_field == self.REQ_UD1:
-          return bytearray([SINGLE_CHAR,])
-        else:
-          raise FrameException
+        debug("Secondary selection do not match")
       else:
-        debug("Frame not for us")
+        raise Frame.FrameException
     else:
-      debug("Unexpected byte: 0x%2.2x", byte)
+      debug("Frame not for us")
     return None
 
   def handle_byte(self, byte):
@@ -380,12 +471,35 @@ class Frame:
       elif (self._bytes == 3):
         data = self._handle_stop(byte)
         frame = None
+        if self._broadcast:
+          data = None
     elif (self._type == self.LONG):
-      pass
-    elif (self._type == self.CONTROL):
+      if (self._bytes == 0):
+        self._handle_l_field(byte, 0)
+      elif (self._bytes == 1):
+        self._handle_l_field(byte, 1)
+      elif (self._bytes == 2):
+        self._handle_start(byte)
+      elif (self._bytes == 0 + 3):
+        self._handle_c_field(byte)
+      elif (self._bytes == 1 + 3):
+        self._handle_a_field(byte)
+      elif (self._bytes == 2 + 3):
+        self._handle_ci_field(byte)
+      elif (self._bytes == self._l_field + 3):
+        self._handle_checksum(byte)
+      elif (self._bytes == self._l_field + 3 + 1):
+        data = self._handle_stop(byte)
+        frame = None
+        if self._broadcast:
+          data = None
+      else:
+        self._message.append(byte) 
       pass
     else:
-      raise FrameException
+      raise Frame.FrameException
+    if self._type == self.SHORT or self._bytes >= 3:
+      self._csum = (self._csum + byte) & 0xff
     self._bytes += 1
     return frame, data
 
@@ -426,6 +540,7 @@ def log():
   global logger
   logging.basicConfig(level=logging.INFO)
   logger = logging.getLogger('pyMbusSlave')
+  logger.setLevel(logging.DEBUG)
   info("pyMbusSlave")
   info("  Serial device:   %s", DEVICE)
   info("  Baudrate:        %d", BAUDRATE)
