@@ -20,7 +20,7 @@
 #
 #
 
-import serial, signal, logging, sys, struct
+import serial, signal, logging, sys, struct, argparse
 
 # Edit these values as appropriate
 DEVICE = "/dev/ttyUSB0"  # Serial device controlling the slave is connected to
@@ -679,7 +679,21 @@ def main():
 
 
 if __name__ == "__main__":
-    DEVICE = sys.argv[1]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--device", type=str, help="Serial device", default=DEVICE)
+    ap.add_argument("--baud", type=int, help="Baud rate", default=BAUDRATE)
+    ap.add_argument("--addr", type=int, help="Primary address", default=ADDR)
+    ap.add_argument("--id", type=int, help="Serial Number", default=ID_NO)
+    ap.add_argument("--manuf", type=str, help="Manufacturer", default=MANUF)
+
+    args = ap.parse_args()
+
+    DEVICE = args.device
+    BAUDRATE = args.baud
+    ADDR = args.addr
+    ID_NO = args.id
+    MANUF = args.manuf
+
     try:
         main()
     except KeyboardInterrupt:
