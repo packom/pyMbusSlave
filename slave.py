@@ -20,7 +20,7 @@
 #
 #
 
-import serial, signal, logging, sys, struct, argparse
+import serial, signal, logging, sys, struct, argparse, os, pty
 
 # Edit these values as appropriate
 DEVICE = "/dev/ttyUSB0"  # Serial device controlling the slave is connected to
@@ -67,6 +67,20 @@ def error(msg, *args, **kwargs):
 
 def critical(msg, *args, **kwargs):
     logger.critical(msg, *args, **kwargs)
+
+
+class PseudoSerial:
+    def __init__(self, fd):
+        self._fd = fd
+
+    def write(self, data):
+        os.write(self._fd, data)
+
+    def close(self):
+        os.close(self._fd)
+
+    def read(self):
+        return os.read(self._fd, 1)
 
 
 class Frame:
@@ -608,9 +622,20 @@ class Frame:
 
 
 def setup_serial_port():
-    ser = serial.serial_for_url(
-        DEVICE, baudrate=BAUDRATE, parity=PARITY, stopbits=STOPBITS, bytesize=BYTESIZE
-    )
+    if DEVICE == "/dev/ptmx":
+        # Pseudo TTY
+        fd, slave = pty.openpty()
+        info("Point your M-Bus master at %s", os.ttyname(slave))
+        debug("Listening on FD=%r", fd)
+        ser = PseudoSerial(fd)
+    else:
+        ser = serial.serial_for_url(
+            DEVICE,
+            baudrate=BAUDRATE,
+            parity=PARITY,
+            stopbits=STOPBITS,
+            bytesize=BYTESIZE,
+        )
     return ser
 
 
