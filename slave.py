@@ -26,7 +26,7 @@ import serial, signal, logging, sys, struct, argparse, os, pty
 DEVICE = "/dev/ttyUSB0"  # Serial device controlling the slave is connected to
 BAUDRATE = 2400  # Baudrate supported by this slave
 ADDR = 3  # MBus Slave address, 0=250 are valid
-ID_NO = 12345678  # MBus Slave serial number, can be up to 8 digits or upper case hex characters
+ID_NO = "12345678"  # MBus Slave serial number, can be up to 8 digits or upper case hex characters
 MANUF = "TST"  # MBus Manufacturer identifier (registered)
 VERSION = 1
 MEDIUM = 0
@@ -708,7 +708,7 @@ if __name__ == "__main__":
     ap.add_argument("--device", type=str, help="Serial device", default=DEVICE)
     ap.add_argument("--baud", type=int, help="Baud rate", default=BAUDRATE)
     ap.add_argument("--addr", type=int, help="Primary address", default=ADDR)
-    ap.add_argument("--id", type=int, help="Serial Number", default=ID_NO)
+    ap.add_argument("--id", type=str, help="Serial Number", default=ID_NO)
     ap.add_argument("--manuf", type=str, help="Manufacturer", default=MANUF)
 
     args = ap.parse_args()
