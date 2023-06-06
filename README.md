@@ -29,14 +29,14 @@ Alternatively, you can override these values on the command line.
 
 ### Virtual serial port
 
-On Linux and Unix systems, specify `/dev/ptmx` as the serial port to create a
+On Linux and Unix systems, specify `pty` as the serial port to create a
 virtual serial port.  The script will report the name of the actual virtual
 serial port you can connect to.
 
 ```
-RC=0 stuartl@rikishi /tmp/pyMbusSlave $ python3 slave.py --device /dev/ptmx
+RC=0 stuartl@rikishi /tmp/pyMbusSlave $ python3 slave.py --device pty
 INFO:pyMbusSlave:pyMbusSlave
-INFO:pyMbusSlave:  Serial device:   /dev/ptmx
+INFO:pyMbusSlave:  Serial device:   pty
 INFO:pyMbusSlave:  Baudrate:        2400
 INFO:pyMbusSlave:  Slave address:   3
 INFO:pyMbusSlave:  Slave device ID: 12345678
@@ -77,6 +77,57 @@ RC=0 stuartl@rikishi /tmp/libmbus/bin $ ./mbus-serial-request-data /dev/pts/4 3
         <Unit>Volume ( m^3)</Unit>
         <Value>456</Value>
         <Timestamp>2023-06-05T01:14:26Z</Timestamp>
+    </DataRecord>
+
+</MBusData>
+```
+
+### TCP Socket
+
+Specify `tcp:${PORT}` or `tcp:${ADDRESS}:${PORT}` (IPv6 should work here too)
+and it'll create a simulated M-Bus/TCP socket.
+
+```
+stuartl@LPA075:~/vrt/projects/widesky/edge/mbus/privdoc/pyMbusSlave$ python3 slave.py --device tcp:20000
+INFO:pyMbusSlave:pyMbusSlave
+INFO:pyMbusSlave:  Serial device:   tcp:20000
+INFO:pyMbusSlave:  Baudrate:        2400
+INFO:pyMbusSlave:  Slave address:   3
+INFO:pyMbusSlave:  Slave device ID: 12345678
+DEBUG:pyMbusSlave:Will bind to any address port 20000
+INFO:pyMbusSlave:Listening ...
+```
+
+```
+stuartl@LPA075:~/vrt/projects/widesky/edge/mbus/privdoc/libmbus$ bin/mbus-tcp-request-data localhost 20000 3
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<MBusData>
+
+    <SlaveInformation>
+        <Id>12345678</Id>
+        <Manufacturer>TST</Manufacturer>
+        <Version>1</Version>
+        <ProductName></ProductName>
+        <Medium>Other</Medium>
+        <AccessNumber>0</AccessNumber>
+        <Status>00</Status>
+        <Signature>0000</Signature>
+    </SlaveInformation>
+
+    <DataRecord id="0">
+        <Function>Instantaneous value</Function>
+        <StorageNumber>0</StorageNumber>
+        <Unit> V</Unit>
+        <Value>1234</Value>
+        <Timestamp>2023-06-06T21:27:49Z</Timestamp>
+    </DataRecord>
+
+    <DataRecord id="1">
+        <Function>Instantaneous value</Function>
+        <StorageNumber>0</StorageNumber>
+        <Unit>Volume ( m^3)</Unit>
+        <Value>456</Value>
+        <Timestamp>2023-06-06T21:27:49Z</Timestamp>
     </DataRecord>
 
 </MBusData>

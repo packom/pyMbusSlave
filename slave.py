@@ -20,7 +20,7 @@
 #
 #
 
-import serial, signal, logging, sys, struct, argparse, os, pty
+import serial, signal, logging, sys, struct, argparse, os, pty, socket, ipaddress
 
 # Edit these values as appropriate
 DEVICE = "/dev/ttyUSB0"  # Serial device controlling the slave is connected to
@@ -81,6 +81,36 @@ class PseudoSerial:
 
     def read(self):
         return os.read(self._fd, 1)
+
+
+class TCPSocket:
+    def __init__(self, skt):
+        self._skt = skt
+        self._conn = None
+        skt.listen(1)
+
+    def write(self, data):
+        self._accept()
+        self._conn.send(data)
+
+    def close(self):
+        self._accept()
+        self._conn.close()
+
+    def read(self):
+        self._accept()
+        data = self._conn.recv(1)
+        if not data:
+            # Possibly closed, drop and try again
+            self._conn = None
+            self._accept()
+            data = self._conn.recv(1)
+        return data
+
+    def _accept(self):
+        if self._conn is None:
+            (self._conn, addr) = self._skt.accept()
+            info("TCP connection from %s", addr)
 
 
 class Frame:
@@ -622,12 +652,35 @@ class Frame:
 
 
 def setup_serial_port():
-    if DEVICE == "/dev/ptmx":
+    if DEVICE == "pty":
         # Pseudo TTY
         fd, slave = pty.openpty()
         info("Point your M-Bus master at %s", os.ttyname(slave))
         debug("Listening on FD=%r", fd)
         ser = PseudoSerial(fd)
+    elif DEVICE.startswith("tcp:"):
+        # TCP device: in the form `tcp:[ADDR]:port`
+        portaddr_parts = DEVICE.split(":")[1:]
+        if len(portaddr_parts) == 1:
+            # Port number only
+            address = ""
+            port = int(portaddr_parts[0])
+        else:
+            # Address/port
+            port = int(portaddr_parts.pop())
+            address = ":".join(portaddr_parts)
+
+        if address:
+            if ipaddress.ip_address(address).version == 6:
+                family = socket.AF_INET6
+            else:
+                family = socket.AF_INET
+        else:
+            family = socket.AF_INET
+
+        debug("Will bind to %s port %d", address or "any address", port)
+        skt = socket.create_server((address, port), family=family)
+        ser = TCPSocket(skt)
     else:
         ser = serial.serial_for_url(
             DEVICE,
