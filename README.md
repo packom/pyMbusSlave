@@ -6,6 +6,20 @@ A sample M-Bus Slave implemented in Python.
 
 You need an M-Bus slave device like [packom.net's M-Bus Slave Hat](https://www.packom.net/m-bus-slave-hat/) connected to your Raspberry Pi.  If using the M-Bus Slave Hat, you wil need to set DEVICE to '/dev/ttyAMA0'.
 
+## Pre-requisites
+
+You will need the python module pySerial (not serial!).  Install it:
+
+```
+pip install pySerial
+```
+
+As both serial and pySerial import using the name serial, you may need to remove serial:
+
+```
+pip uninstall serial
+```
+
 ## Downloading
 
 ```
